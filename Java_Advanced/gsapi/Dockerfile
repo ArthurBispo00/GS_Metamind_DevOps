@@ -14,10 +14,17 @@ USER appuser
 
 # Variáveis de ambiente para a aplicação Spring Boot
 ENV SPRING_DATASOURCE_URL=jdbc:oracle:thin:@oracle-db-container:1521/XEPDB1
-ENV SPRING_DATASOURCE_USERNAME=seu_usuario_oracle_app # Defina o usuário que seu DDL criará
-ENV SPRING_DATASOURCE_PASSWORD=sua_senha_oracle_app # Defina a senha que seu DDL criará
+
+# Defina o usuário que seu DDL criará
+ENV SPRING_DATASOURCE_USERNAME=seu_usuario_oracle_app
+
+# Defina a senha que seu DDL criará
+ENV SPRING_DATASOURCE_PASSWORD=sua_senha_oracle_app
+
 ENV SPRING_JPA_HIBERNATE_DDL_AUTO=validate
-ENV Maps_APIKEY="" # Placeholder - Passe o valor real ao rodar o container
+
+# Placeholder - Passe o valor real ao rodar o container
+ENV Maps_APIKEY=""
 
 EXPOSE 8080
 
