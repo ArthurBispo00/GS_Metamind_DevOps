@@ -102,14 +102,7 @@ Navegue para a pasta `gs-frontend/`.
 ```bash
 cd caminho/para/GS_FIAP_2025_1SM-1/Java_Advanced/gs-frontend
 ```
-
-Carregue a imagem Docker localmente:
-
-```bash
-docker load -i minha-app-next.tar
-```
-
-Em seguida, construa a imagem Docker do front-end:
+construa a imagem Docker do front-end:
 
 ```bash
 docker build -t gs-app-frontend:latest .
