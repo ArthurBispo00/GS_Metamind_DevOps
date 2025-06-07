@@ -229,3 +229,34 @@ dê o comando:
 docker logs -f frontend-api-container
 ```
 para verificar os logs e as criação das tabelas.
+
+### 6.Exempo de Cadastro no Site
+
+## Detalhes Pessoais
+
+* **ARTHUR BISPO DE LIMA**
+* **🎂 Data de Nascimento:** 06/03/2000
+* **📄 Documento:** 41204141805
+
+---
+
+## Contato Principal
+
+* **📞 Contato Principal:**
+    * **📧 Email:** arthurbiapo@hotmail.com
+    * **☎️ Telefone:** (11) 99145-6219
+    * **📱 Celular:** (11) 99145-6219
+    * **💬 WhatsApp:** (11) 99145-6219
+    * **🏷️ Tipo:** Principal
+
+---
+
+## Endereço Principal
+
+* **🏠 Endereço Principal:**
+    * Rua Floriano Peixoto, 460 - Casa
+    * Vila Romanópolis - Ferraz de Vasconcelos/SP
+    * CEP: 08529-030
+* **🌐 Coordenadas:**
+    * **Latitude (Lat):** -14.2350040
+    * **Longitude (Lon):** -51.9252800
