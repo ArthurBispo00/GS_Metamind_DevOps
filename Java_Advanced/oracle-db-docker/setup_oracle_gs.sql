@@ -166,7 +166,7 @@ CREATE OR REPLACE TRIGGER tb_contato3_id_contato_trg BEFORE
     FOR EACH ROW
     WHEN ( new.id_contato IS NULL )
 BEGIN
-    :new.id_contato := tb_contto3_id_contato_seq.nextval;
+    :new.id_contato := tb_contato3_id_contato_seq.nextval; -- CORRIGIDO AQUI
 END;
 /
 
@@ -190,3 +190,4 @@ CREATE OR REPLACE TRIGGER tb_eonet3_id_eonet_trg BEFORE
 BEGIN
     :new.id_eonet := tb_eonet3_id_eonet_seq.nextval;
 END;
+/

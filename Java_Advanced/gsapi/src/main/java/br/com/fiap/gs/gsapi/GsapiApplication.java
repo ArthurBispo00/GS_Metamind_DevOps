@@ -20,7 +20,7 @@ public class GsapiApplication {
 	// Ele já está definido em AppConfig.java com mais configurações.
     /*
     @Bean
-    public RestTemplate restTemplate(RestTemplateBuilder builder) {
+    public RestTemplate restTempl   ate(RestTemplateBuilder builder) {
         return builder.build();
     }
     */

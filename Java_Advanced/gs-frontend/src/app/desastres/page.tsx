@@ -1,14 +1,15 @@
 // src/app/desastres/page.tsx
 'use client';
 
-import { useEffect, useState, FormEvent, useRef, ChangeEvent } from 'react';
+import React, { useEffect, useState, FormEvent, useRef, ChangeEvent } from 'react';
+import dynamic from 'next/dynamic';
 import {
     listarEventosEonet,
     sincronizarNasaEonet,
     buscarEventosNasaProximos,
-    buscarClientePorId, // Usado para buscar dados do usuário
+    buscarClientePorId,
     triggerUserSpecificAlert,
-    buscarEventoLocalPorEonetApiId // Usado na nova aba para buscar detalhes do evento
+    buscarEventoLocalPorEonetApiId
 } from '@/lib/apiService';
 import type {
     EonetResponseDTO,
@@ -16,41 +17,67 @@ import type {
     NasaEonetEventDTO,
     NasaEonetCategoryDTO,
     NasaEonetGeometryDTO,
-    ClienteResponseDTO, // Tipo retornado pela API para dados de usuário/cliente
-    UserAlertRequestDTO,
-    AlertableEventDTO
+    ClienteResponseDTO,
+    UserAlertRequestDTO
+    // CORREÇÃO: AlertableEventDTO removido se não for usado (o linter indicou)
 } from '@/lib/types';
 
-// Renomeando para clareza na UI desta página, embora a API e os tipos ainda usem 'Cliente'
+import type { EventMapMarkerData } from '@/components/EonetEventMap';
+
 type UsuarioResponseDTO = ClienteResponseDTO;
+
+const DynamicEonetEventMap = dynamic(() => import('@/components/EonetEventMap'), {
+    ssr: false,
+    loading: () => (
+        <div className="flex items-center justify-center w-full h-full bg-slate-100/80 rounded-md" style={{minHeight: '200px'}}>
+            <p className="text-center text-slate-600 py-2 text-sm">Carregando mapa...</p>
+        </div>
+    ),
+});
 
 const parseEonetEventJson = (jsonString: string): Partial<NasaEonetEventDTO> | null => {
     try {
         return JSON.parse(jsonString) as Partial<NasaEonetEventDTO>;
-    } catch (error) {
-        console.error("Erro ao parsear JSON do evento EONET:", error, jsonString);
+    } catch (error: unknown) { // Melhorar tipagem do catch
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("Erro ao parsear JSON do evento EONET:", message, jsonString);
         return null;
     }
 };
 
-type TabKey = 'listarLocais' | 'sincronizar' | 'buscarProximos' | 'alertarUsuario';
+const getCoordinatesFromEvent = (geometry: NasaEonetGeometryDTO[] | undefined): [number, number] | null => {
+    if (!geometry || geometry.length === 0) return null;
+    const pointGeometry = geometry.find(geom => geom.type === "Point");
+    if (pointGeometry && Array.isArray(pointGeometry.coordinates) && pointGeometry.coordinates.length === 2) {
+        return [pointGeometry.coordinates[1] as number, pointGeometry.coordinates[0] as number];
+    }
+    const firstGeom = geometry[0];
+    if (firstGeom && Array.isArray(firstGeom.coordinates)) {
+        if (firstGeom.type === "Polygon" &&
+            Array.isArray(firstGeom.coordinates[0]) &&
+            Array.isArray(firstGeom.coordinates[0][0]) &&
+            firstGeom.coordinates[0][0].length === 2
+        ) {
+            return [firstGeom.coordinates[0][0][1] as number, firstGeom.coordinates[0][0][0] as number];
+        }
+    }
+    return null;
+};
+
+type TabKey = 'sincronizar' | 'listarLocais' | 'buscarProximos' | 'alertarUsuario';
 
 export default function DesastresPage() {
-    const [activeTab, setActiveTab] = useState<TabKey>('listarLocais');
-
-    // Estados para "Eventos Locais"
+    const [activeTab, setActiveTab] = useState<TabKey>('sincronizar');
     const [eventosLocaisPage, setEventosLocaisPage] = useState<Page<EonetResponseDTO> | null>(null);
     const [erroListagemLocal, setErroListagemLocal] = useState<string | null>(null);
-    const [loadingListagemLocal, setLoadingListagemLocal] = useState<boolean>(true);
+    const [loadingListagemLocal, setLoadingListagemLocal] = useState<boolean>(false);
     const [currentLocalPage, setCurrentLocalPage] = useState<number>(0);
 
-    // Estados para "Sincronizar NASA"
-    const [syncParams, setSyncParams] = useState({ limit: '', days: '', status: 'open', source: '' });
+    const [syncParams, setSyncParams] = useState({ limit: '20', days: '7', status: 'open', source: '' });
     const [loadingSync, setLoadingSync] = useState<boolean>(false);
     const [syncMensagem, setSyncMensagem] = useState<string | null>(null);
     const [syncErro, setSyncErro] = useState<string | null>(null);
 
-    // Estados para "Buscar Próximos"
     const [proximidadeParams, setProximidadeParams] = useState({
         clienteId: '', latitude: '', longitude: '', raioKm: '100',
         limit: '10', days: '30', status: 'open', source: ''
@@ -62,7 +89,6 @@ export default function DesastresPage() {
     const [mensagemAlertaProximidade, setMensagemAlertaProximidade] = useState<string | null>(null);
     const [erroAlertaProximidade, setErroAlertaProximidade] = useState<string | null>(null);
 
-    // Estados para a nova aba "Alertar Usuário"
     const [alertarUsuarioParams, setAlertarUsuarioParams] = useState({ usuarioId: '', eventoEonetId: '' });
     const [verifiedUsuario, setVerifiedUsuario] = useState<UsuarioResponseDTO | null>(null);
     const [verifiedEvento, setVerifiedEvento] = useState<Partial<NasaEonetEventDTO> | null>(null);
@@ -72,7 +98,6 @@ export default function DesastresPage() {
     const [mensagemAlertarUsuario, setMensagemAlertarUsuario] = useState<string | null>(null);
     const [erroAlertarUsuario, setErroAlertarUsuario] = useState<string | null>(null);
 
-    // Refs para os inputs
     const usuarioIdRef = useRef<HTMLInputElement>(null);
     const latitudeRef = useRef<HTMLInputElement>(null);
     const longitudeRef = useRef<HTMLInputElement>(null);
@@ -86,8 +111,14 @@ export default function DesastresPage() {
         try {
             const data = await listarEventosEonet(page, 5);
             setEventosLocaisPage(data);
-        } catch (error: any) {
-            setErroListagemLocal(`Falha ao carregar eventos locais: ${error.message || 'Erro desconhecido'}`);
+        } catch (error: unknown) { // CORREÇÃO: no-explicit-any (linha ~113)
+            let errorMessage = 'Erro desconhecido ao carregar eventos locais.';
+            if (error instanceof Error) {
+                errorMessage = error.message || errorMessage;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            }
+            setErroListagemLocal(`Falha ao carregar eventos locais: ${errorMessage}`);
             setEventosLocaisPage(null);
         } finally {
             setLoadingListagemLocal(false);
@@ -95,32 +126,33 @@ export default function DesastresPage() {
     };
 
     useEffect(() => {
-        console.log("Trocando para aba:", activeTab);
         setSyncMensagem(null); setSyncErro(null);
-        setErroProximidade(null);
-        // setEventosProximos([]); // Não limpar resultados automaticamente pode ser bom se o usuário só está olhando outra aba rapidamente
+        if (erroProximidade && !(erroProximidade.includes("Usuário") || erroProximidade.includes("ID de Usuário") || erroProximidade.includes("coordenadas"))) {
+            setErroProximidade(null);
+        }
         setMensagemAlertaProximidade(null); setErroAlertaProximidade(null);
         setMensagemAlertarUsuario(null); setErroAlertarUsuario(null);
-        setVerifiedUsuario(null); setVerifiedEvento(null);
-        // Limpar inputs da aba "Alertar Usuário" se não for a ativa
+
         if (activeTab !== 'alertarUsuario') {
             setAlertarUsuarioParams({ usuarioId: '', eventoEonetId: '' });
+            setVerifiedUsuario(null);
+            setVerifiedEvento(null);
         }
-        // Limpar nome do usuário da aba "Buscar Próximos" se não for a ativa e o ID estiver vazio
         if (activeTab !== 'buscarProximos' && !proximidadeParams.clienteId) {
             setNomeUsuarioParaCoords(null);
         }
 
-
         if (activeTab === 'listarLocais') {
             fetchEventosLocais(currentLocalPage);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab]);
 
     useEffect(() => {
         if (activeTab === 'listarLocais') {
             fetchEventosLocais(currentLocalPage);
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentLocalPage]);
 
     const handleSyncParamChange = (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -135,8 +167,19 @@ export default function DesastresPage() {
         try {
             const eventosSincronizados = await sincronizarNasaEonet(limitNum, daysNum, syncParams.status || undefined, syncParams.source || undefined);
             setSyncMensagem(`${eventosSincronizados.length} evento(s) processado(s) / sincronizado(s) com sucesso!`);
-            if (activeTab === 'listarLocais') { fetchEventosLocais(0); setCurrentLocalPage(0); }
-        } catch (error: any) { setSyncErro(`Falha na sincronização: ${error.message || 'Erro desconhecido'}`); setSyncMensagem(null);
+            if (activeTab === 'listarLocais') {
+                fetchEventosLocais(0);
+                setCurrentLocalPage(0);
+            }
+        } catch (error: unknown) { // CORREÇÃO: no-explicit-any (linha ~167)
+            let errorMessage = 'Erro desconhecido na sincronização.';
+            if (error instanceof Error) {
+                errorMessage = error.message || errorMessage;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            }
+            setSyncErro(`Falha na sincronização: ${errorMessage}`);
+            setSyncMensagem(null);
         } finally { setLoadingSync(false); }
     };
 
@@ -148,7 +191,9 @@ export default function DesastresPage() {
             if (erroProximidade && (erroProximidade.includes("Usuário") || erroProximidade.includes("ID de Usuário") || erroProximidade.includes("coordenadas"))) {
                 setErroProximidade(null);
             }
-            if (value === '') setProximidadeParams(prev => ({ ...prev, latitude: '', longitude: '' }));
+            if (value === '') {
+                setProximidadeParams(prev => ({ ...prev, latitude: '', longitude: '' }));
+            }
         }
     };
 
@@ -160,24 +205,33 @@ export default function DesastresPage() {
         setLoadingProximidade(true); setErroProximidade(null); setNomeUsuarioParaCoords(null);
         try {
             const usuario: ClienteResponseDTO = await buscarClientePorId(Number(proximidadeParams.clienteId));
-            if (usuario.enderecos && usuario.enderecos.length > 0 && usuario.enderecos[0] &&
-                typeof usuario.enderecos[0].latitude === 'number' && typeof usuario.enderecos[0].longitude === 'number') {
-                const end = usuario.enderecos[0];
+            const enderecosArray = usuario.enderecos ? Array.from(usuario.enderecos) : [];
+            if (enderecosArray.length > 0 && enderecosArray[0] &&
+                typeof enderecosArray[0].latitude === 'number' && typeof enderecosArray[0].longitude === 'number' &&
+                (enderecosArray[0].latitude !== 0 || enderecosArray[0].longitude !== 0)
+            ) {
+                const end = enderecosArray[0];
                 setProximidadeParams(prev => ({ ...prev, latitude: String(end.latitude), longitude: String(end.longitude) }));
-                setNomeUsuarioParaCoords(`${usuario.nome} ${usuario.sobrenome}`);
+                setNomeUsuarioParaCoords(`${usuario.nome} ${usuario.sobrenome || ''}`.trim());
             } else {
-                setErroProximidade("Usuário encontrado, mas não possui endereço principal com coordenadas válidas.");
+                setErroProximidade(`Usuário ID ${proximidadeParams.clienteId} (${usuario.nome}) encontrado, mas não possui endereço principal com coordenadas válidas.`);
                 setProximidadeParams(prev => ({ ...prev, latitude: '', longitude: '' }));
             }
-        } catch (error: any) {
-            setErroProximidade(`Falha ao buscar dados do usuário (ID: ${proximidadeParams.clienteId}): ${error.message}`);
+        } catch (error: unknown) { // CORREÇÃO: no-explicit-any (linha ~207)
+            let errorMessage = 'Erro desconhecido ao buscar dados do usuário.';
+            if (error instanceof Error) {
+                errorMessage = error.message || errorMessage;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            }
+            setErroProximidade(`Falha ao buscar dados do usuário (ID: ${proximidadeParams.clienteId}): ${errorMessage}`);
             setProximidadeParams(prev => ({ ...prev, latitude: '', longitude: '' }));
         } finally { setLoadingProximidade(false); }
     };
 
     const handleBuscarProximidade = async (e: FormEvent) => {
         e.preventDefault();
-        if (erroProximidade && !(erroProximidade.includes("Usuário") || erroProximidade.includes("ID de Usuário"))) {
+        if (erroProximidade && !(erroProximidade.includes("Usuário") || erroProximidade.includes("ID de Usuário") || erroProximidade.includes("coordenadas"))) {
             setErroProximidade(null);
         }
         setMensagemAlertaProximidade(null);
@@ -197,19 +251,20 @@ export default function DesastresPage() {
                 parseFloat(proximidadeParams.raioKm),
                 proximidadeParams.limit ? parseInt(proximidadeParams.limit, 10) : undefined,
                 proximidadeParams.days ? parseInt(proximidadeParams.days, 10) : undefined,
-                proximidadeParams.status || undefined, proximidadeParams.source || undefined
+                proximidadeParams.status || undefined, proximidadeParams.source || undefined,
+                undefined, undefined, undefined
             );
             setEventosProximos(eventosRecebidos || []);
 
             if (!eventosRecebidos || eventosRecebidos.length === 0) {
-                if (!(erroProximidade && (erroProximidade.includes("Usuário") || erroProximidade.includes("ID de Usuário")))) {
+                if (!(erroProximidade && (erroProximidade.includes("Usuário") || erroProximidade.includes("ID de Usuário") || erroProximidade.includes("coordenadas")))) {
                     setErroProximidade("Nenhum evento encontrado na API da NASA para os critérios de proximidade informados.");
                 }
             } else {
-                if (erroProximidade && !(erroProximidade.includes("Usuário") || erroProximidade.includes("ID de Usuário"))) {
+                if (erroProximidade && !(erroProximidade.includes("Usuário") || erroProximidade.includes("ID de Usuário") || erroProximidade.includes("coordenadas"))) {
                     setErroProximidade(null);
                 }
-                if (proximidadeParams.clienteId) {
+                if (proximidadeParams.clienteId && nomeUsuarioParaCoords) {
                     const eventoPrincipal = eventosRecebidos[0];
                     const dataEvento = eventoPrincipal.geometry?.[0]?.date;
                     const alertaPayload: UserAlertRequestDTO = {
@@ -218,18 +273,31 @@ export default function DesastresPage() {
                             eventId: eventoPrincipal.id, title: eventoPrincipal.title,
                             eventDate: dataEvento ? new Date(dataEvento).toISOString() : "Data não disponível",
                             link: eventoPrincipal.link,
-                            description: eventoPrincipal.description || `Um evento "${eventoPrincipal.title}" foi detectado próximo à sua área em ${formatDate(dataEvento)}.`,
+                            description: eventoPrincipal.description || `Um evento "${eventoPrincipal.title}" foi detectado próximo à área de ${nomeUsuarioParaCoords} em ${formatDate(dataEvento)}.`,
                         }
                     };
-                    try {
+                    try { // CORREÇÃO: no-explicit-any (linha ~263) - este catch interno
                         const alertResponseMsg = await triggerUserSpecificAlert(alertaPayload);
-                        setMensagemAlertaProximidade(alertResponseMsg || "Alerta sobre evento próximo foi processado e enviado.");
-                    } catch (errAlerta: any) {
-                        setErroAlertaProximidade(errAlerta.message || "Não foi possível processar o envio do alerta no momento.");
+                        setMensagemAlertaProximidade(alertResponseMsg || "Alerta sobre evento próximo foi processado.");
+                    } catch (errAlerta: unknown) {
+                        let errorMessage = "Não foi possível processar o envio do alerta no momento.";
+                        if (errAlerta instanceof Error) {
+                            errorMessage = errAlerta.message || errorMessage;
+                        } else if (typeof errAlerta === 'string') {
+                            errorMessage = errAlerta;
+                        }
+                        setErroAlertaProximidade(errorMessage);
                     }
                 }
             }
-        } catch (error: any) { setErroProximidade(`Falha ao buscar eventos próximos: ${error.message}`);
+        } catch (error: unknown) { // CORREÇÃO: no-explicit-any (linha ~268) - catch principal da função
+            let errorMessage = 'Erro desconhecido ao buscar eventos próximos.';
+            if (error instanceof Error) {
+                errorMessage = error.message || errorMessage;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            }
+            setErroProximidade(`Falha ao buscar eventos próximos: ${errorMessage}`);
         } finally { setLoadingProximidade(false); }
     };
 
@@ -239,6 +307,7 @@ export default function DesastresPage() {
         if (name === 'usuarioId') { setVerifiedUsuario(null); if(erroAlertarUsuario && erroAlertarUsuario.includes("Usuário")) setErroAlertarUsuario(null); }
         if (name === 'eventoEonetId') { setVerifiedEvento(null); if(erroAlertarUsuario && erroAlertarUsuario.includes("Evento")) setErroAlertarUsuario(null); }
         setMensagemAlertarUsuario(null);
+        if (erroAlertarUsuario) setErroAlertarUsuario(null);
     };
 
     const handleVerificarUsuario = async () => {
@@ -250,8 +319,15 @@ export default function DesastresPage() {
         try {
             const usuario = await buscarClientePorId(Number(alertarUsuarioParams.usuarioId));
             setVerifiedUsuario(usuario);
-        } catch (error: any) {
-            setErroAlertarUsuario(error.message || `Erro ao buscar usuário ID ${alertarUsuarioParams.usuarioId}.`);
+            setErroAlertarUsuario(null);
+        } catch (error: unknown) { // CORREÇÃO: no-explicit-any (linha ~292)
+            let errorMessage = `Erro ao buscar usuário ID ${alertarUsuarioParams.usuarioId}.`;
+            if (error instanceof Error) {
+                errorMessage = error.message || errorMessage;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            }
+            setErroAlertarUsuario(errorMessage);
             setVerifiedUsuario(null);
         } finally { setLoadingVerifyUsuario(false); }
     };
@@ -265,10 +341,20 @@ export default function DesastresPage() {
         try {
             const eventoLocal = await buscarEventoLocalPorEonetApiId(alertarUsuarioParams.eventoEonetId);
             const eventoNasaDetails = parseEonetEventJson(eventoLocal.json);
-            if (eventoNasaDetails) { setVerifiedEvento(eventoNasaDetails); }
+            if (eventoNasaDetails) {
+                if (!eventoNasaDetails.id && eventoLocal.eonetIdApi) eventoNasaDetails.id = eventoLocal.eonetIdApi;
+                setVerifiedEvento(eventoNasaDetails);
+                setErroAlertarUsuario(null);
+            }
             else { throw new Error("Não foi possível interpretar os detalhes do evento EONET."); }
-        } catch (error: any) {
-            setErroAlertarUsuario(error.message || `Erro ao buscar evento EONET ID ${alertarUsuarioParams.eventoEonetId}. Verifique se o evento foi sincronizado.`);
+        } catch (error: unknown) { // CORREÇÃO: no-explicit-any (linha ~313)
+            let errorMessage = `Erro ao buscar evento EONET ID ${alertarUsuarioParams.eventoEonetId}. Verifique se o evento foi sincronizado.`;
+            if (error instanceof Error) {
+                errorMessage = error.message || errorMessage;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            }
+            setErroAlertarUsuario(errorMessage);
             setVerifiedEvento(null);
         } finally { setLoadingVerifyEvento(false); }
     };
@@ -294,47 +380,58 @@ export default function DesastresPage() {
             };
             const alertResponseMsg = await triggerUserSpecificAlert(alertaPayload);
             setMensagemAlertarUsuario(alertResponseMsg || `Alerta sobre o evento "${alertaPayload.eventDetails.title}" foi processado para o usuário ${verifiedUsuario.nome}.`);
-        } catch (error: any) {
-            setErroAlertarUsuario(error.message || "Não foi possível processar o envio do alerta específico.");
+        } catch (error: unknown) { // CORREÇÃO: no-explicit-any (linha ~340)
+            let errorMessage = "Não foi possível processar o envio do alerta específico.";
+            if (error instanceof Error) {
+                errorMessage = error.message || errorMessage;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            }
+            setErroAlertarUsuario(errorMessage);
         } finally { setLoadingAlertarUsuario(false); }
     };
 
     const formatDate = (dateString?: string | Date): string => {
         if (!dateString) return 'N/A';
-        try { return new Date(dateString).toLocaleDateString('pt-BR', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
-        } catch (e) { return 'Data inválida'; }
+        try {
+            return new Date(dateString).toLocaleDateString('pt-BR', {
+                year: 'numeric', month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit', timeZone: 'UTC'
+            });
+        } catch { return 'Data inválida'; } // CORREÇÃO: Variável 'e' não utilizada (linha ~352)
     };
 
-    const renderEventoItem = (evento: NasaEonetEventDTO | Partial<NasaEonetEventDTO>, keyPrefix: string = "evt") => {
+    // CORREÇÃO: Removido o parâmetro keyPrefix se não for usado
+    const renderEventoItem = (evento: NasaEonetEventDTO | Partial<NasaEonetEventDTO>) => {
         const dataEvento = evento?.geometry?.[0]?.date;
         const categorias = evento?.categories?.map((cat: NasaEonetCategoryDTO) => cat.title).join(', ') || 'N/A';
         return (
-            <div className="client-info-section">
+            <div className="client-info-section" style={{flex: 1}}>
                 <strong>{evento?.title || 'Título não disponível'}</strong>
                 {evento?.id && <p><span className="label">ID NASA:</span> {evento.id}</p>}
                 <p><span className="label">Data do Evento:</span> {formatDate(dataEvento?.toString())}</p>
                 <p><span className="label">Categorias:</span> {categorias}</p>
-                {evento?.link && (<p><span className="label">Fonte:</span> <a href={evento.link} target="_blank" rel="noopener noreferrer" style={{color: 'var(--link-color)'}}>Ver na NASA EONET</a></p>)}
-                {evento?.geometry && evento.geometry.length > 0 && evento.geometry[0].coordinates && (<p style={{fontSize: '0.85em', color: 'var(--muted-text-color)'}}><span className="label">Coordenadas:</span> {JSON.stringify(evento.geometry[0].coordinates)}</p>)}
+                {evento?.link && (<p><span className="label">Fonte:</span> <a href={evento.link} target="_blank" rel="noopener noreferrer" style={{color: 'var(--link-color)', pointerEvents: 'auto'}}>Ver na NASA EONET</a></p>)}
             </div>
         );
     };
 
     const tabButtonStyle = (tabKey: TabKey): React.CSSProperties => ({
         padding: '10px 20px', cursor: 'pointer', border: '1px solid transparent',
-        borderBottomColor: activeTab === tabKey ? 'var(--white-bg)' : 'var(--border-color)',
-        backgroundColor: activeTab === tabKey ? 'var(--white-bg)' : 'var(--light-gray-bg)',
+        borderBottomColor: activeTab === tabKey ? 'var(--white-bg, #fff)' : 'var(--border-color, #ccc)',
+        backgroundColor: activeTab === tabKey ? 'var(--white-bg, #fff)' : 'var(--light-gray-bg, #f0f0f0)',
         fontWeight: activeTab === tabKey ? '600' : '500', marginRight: '5px',
-        borderTopLeftRadius: 'var(--card-border-radius)', borderTopRightRadius: 'var(--card-border-radius)',
+        borderTopLeftRadius: 'var(--card-border-radius, 6px)', borderTopRightRadius: 'var(--card-border-radius, 6px)',
         display: 'inline-flex', alignItems: 'center', gap: '6px',
-        color: activeTab === tabKey ? 'var(--primary-color)' : 'var(--text-color)',
+        color: activeTab === tabKey ? 'var(--primary-color, blue)' : 'var(--text-color, black)',
         position: 'relative', bottom: '-1px', zIndex: activeTab === tabKey ? 2 : 1,
     });
 
     const tabContentStyle: React.CSSProperties = {
-        border: '1px solid var(--border-color)', padding: '20px',
-        borderRadius: '0 var(--card-border-radius) var(--card-border-radius) var(--card-border-radius)',
-        backgroundColor: 'var(--white-bg)', marginTop: '-1px', boxShadow: 'var(--card-shadow)',
+        border: '1px solid var(--border-color, #ccc)', padding: '20px',
+        borderRadius: '0 var(--card-border-radius, 6px) var(--card-border-radius, 6px) var(--card-border-radius, 6px)',
+        backgroundColor: 'var(--white-bg, #fff)', marginTop: '-1px', boxShadow: 'var(--card-shadow, 0 1px 3px rgba(0,0,0,0.1))',
+        minHeight: '400px',
     };
 
     return (
@@ -344,12 +441,12 @@ export default function DesastresPage() {
                 Gerenciamento de Eventos de Desastres (EONET)
             </h1>
 
-            <div style={{ marginBottom: '0px', borderBottom: '1px solid var(--border-color)' }}>
-                <button style={tabButtonStyle('listarLocais')} onClick={() => setActiveTab('listarLocais')}>
-                    <span className="material-icons-outlined">storage</span> Eventos Locais
-                </button>
+            <div style={{ marginBottom: '0px', borderBottom: '1px solid var(--border-color, #ccc)' }}>
                 <button style={tabButtonStyle('sincronizar')} onClick={() => setActiveTab('sincronizar')}>
                     <span className="material-icons-outlined">sync</span> Sincronizar NASA
+                </button>
+                <button style={tabButtonStyle('listarLocais')} onClick={() => setActiveTab('listarLocais')}>
+                    <span className="material-icons-outlined">storage</span> Eventos Locais
                 </button>
                 <button style={tabButtonStyle('buscarProximos')} onClick={() => setActiveTab('buscarProximos')}>
                     <span className="material-icons-outlined">travel_explore</span> Buscar Próximos
@@ -360,45 +457,6 @@ export default function DesastresPage() {
             </div>
 
             <div style={tabContentStyle}>
-                {activeTab === 'listarLocais' && (
-                    <section>
-                        <h2 className="section-title">
-                            <span className="material-icons-outlined">list_alt</span>
-                            Eventos EONET Armazenados Localmente
-                        </h2>
-                        {loadingListagemLocal && !eventosLocaisPage && <p className="message info">Carregando eventos locais...</p>}
-                        {erroListagemLocal && <p className="message error">{erroListagemLocal}</p>}
-                        {(!eventosLocaisPage || eventosLocaisPage.content.length === 0) && !loadingListagemLocal && !erroListagemLocal && (
-                            <div style={{ textAlign: 'center', padding: '30px', border: '1px dashed var(--border-color)', borderRadius: 'var(--card-border-radius)', marginTop: '1rem' }}>
-                                <p>Nenhum evento EONET encontrado no banco de dados local.</p>
-                                <p>Vá para a aba "Sincronizar NASA" para buscar novos eventos.</p>
-                            </div>
-                        )}
-                        {eventosLocaisPage && eventosLocaisPage.content.length > 0 && (
-                            <ul style={{ listStyle: 'none', padding: 0, marginTop: '1rem' }}>
-                                {eventosLocaisPage.content.map(eonetResp => {
-                                    const eventoDetalhes = eonetResp.json ? parseEonetEventJson(eonetResp.json) : null;
-                                    return (
-                                        <li key={eonetResp.idEonet} className="client-list-item">
-                                            {renderEventoItem(eventoDetalhes, `local-${eonetResp.idEonet}`)}
-                                            <small style={{display: 'block', textAlign:'right', color: 'var(--muted-text-color)'}}>
-                                                ID Local: {eonetResp.idEonet}, Data Registro Local: {formatDate(eonetResp.data?.toString())}
-                                            </small>
-                                        </li>
-                                    );
-                                })}
-                            </ul>
-                        )}
-                        {eventosLocaisPage && eventosLocaisPage.totalPages > 0 && (
-                            <div className="pagination-controls">
-                                <button onClick={() => setCurrentLocalPage(p => Math.max(0, p - 1))} disabled={eventosLocaisPage.first || loadingListagemLocal} className="button button-secondary"> <span className="material-icons-outlined">navigate_before</span> Anterior </button>
-                                <span>Página {eventosLocaisPage.number + 1} de {eventosLocaisPage.totalPages}</span>
-                                <button onClick={() => setCurrentLocalPage(p => Math.min(eventosLocaisPage.totalPages - 1, p + 1))} disabled={eventosLocaisPage.last || loadingListagemLocal} className="button button-secondary"> Próxima <span className="material-icons-outlined">navigate_next</span> </button>
-                            </div>
-                        )}
-                    </section>
-                )}
-
                 {activeTab === 'sincronizar' && (
                     <section>
                         <h2 className="section-title">
@@ -407,8 +465,8 @@ export default function DesastresPage() {
                         </h2>
                         <form onSubmit={handleSincronizar} className="form-container" style={{marginTop: '1rem'}}>
                             <div className="form-row">
-                                <div className="form-group flex-item"><label htmlFor="syncLimit">Limite de eventos:</label><input type="number" id="syncLimit" name="limit" value={syncParams.limit} onChange={handleSyncParamChange} placeholder="Ex: 20 (opcional)" /></div>
-                                <div className="form-group flex-item"><label htmlFor="syncDays">Dias anteriores:</label><input type="number" id="syncDays" name="days" value={syncParams.days} onChange={handleSyncParamChange} placeholder="Ex: 30 (opcional)" /></div>
+                                <div className="form-group flex-item"><label htmlFor="syncLimit">Limite de eventos:</label><input type="number" id="syncLimit" name="limit" value={syncParams.limit} onChange={handleSyncParamChange} placeholder="Ex: 20 (padrão API: 10)" /></div>
+                                <div className="form-group flex-item"><label htmlFor="syncDays">Dias anteriores:</label><input type="number" id="syncDays" name="days" value={syncParams.days} onChange={handleSyncParamChange} placeholder="Ex: 30 (padrão API: todos)" /></div>
                             </div>
                             <div className="form-row">
                                 <div className="form-group flex-item"><label htmlFor="syncStatus">Status do evento:</label><select id="syncStatus" name="status" value={syncParams.status} onChange={handleSyncParamChange}><option value="open">Abertos (open)</option><option value="closed">Fechados (closed)</option><option value="">Todos</option></select></div>
@@ -418,9 +476,80 @@ export default function DesastresPage() {
                                 <span className="material-icons-outlined">sync</span>
                                 {loadingSync ? 'Sincronizando...' : 'Iniciar Sincronização'}
                             </button>
-                            {syncMensagem && !syncErro && <p className="message success">{syncMensagem}</p>}
-                            {syncErro && <p className="message error">{syncErro}</p>}
+                            {syncMensagem && !syncErro && <p className="message success" style={{marginTop: '15px'}}>{syncMensagem}</p>}
+                            {syncErro && <p className="message error" style={{marginTop: '15px'}}>{syncErro}</p>}
                         </form>
+                    </section>
+                )}
+
+                {activeTab === 'listarLocais' && (
+                    <section>
+                        <h2 className="section-title">
+                            <span className="material-icons-outlined">list_alt</span>
+                            Eventos EONET Armazenados Localmente
+                        </h2>
+                        {loadingListagemLocal && !eventosLocaisPage && <p className="message info">Carregando eventos locais...</p>}
+                        {erroListagemLocal && <p className="message error">{erroListagemLocal}</p>}
+                        {(!eventosLocaisPage || eventosLocaisPage.content.length === 0) && !loadingListagemLocal && !erroListagemLocal && (
+                            <div style={{ textAlign: 'center', padding: '30px', border: '1px dashed var(--border-color, #ccc)', borderRadius: 'var(--card-border-radius, 6px)', marginTop: '1rem' }}>
+                                <p>Nenhum evento EONET encontrado no banco de dados local.</p>
+                                <p>Vá para a aba &quot;Sincronizar NASA&quot; para buscar novos eventos.</p> {/* CORREÇÃO: Aspas */}
+                            </div>
+                        )}
+                        {eventosLocaisPage && eventosLocaisPage.content.length > 0 && (
+                            <ul style={{ listStyle: 'none', padding: 0, marginTop: '1rem' }}>
+                                {eventosLocaisPage.content.map(eonetResp => {
+                                    const eventoDetalhes = eonetResp.json ? parseEonetEventJson(eonetResp.json) : null;
+                                    const coords = eventoDetalhes?.geometry ? getCoordinatesFromEvent(eventoDetalhes.geometry) : null;
+                                    const eventKey = `local-${eonetResp.idEonet}`;
+                                    const miniMapMarker: EventMapMarkerData[] = coords && eventoDetalhes ? [{
+                                        id: eventKey,
+                                        position: coords,
+                                        popupText: `<strong>${eventoDetalhes.title || 'Evento Local'}</strong>`
+                                    }] : [];
+
+                                    return (
+                                        <li key={eventKey} className="desastre-page-event-list-item event-card-item-layout">
+                                            <div style={{flex: '2 1 300px', minWidth: '280px'}}>
+                                                {renderEventoItem(eventoDetalhes || { title: `Detalhes indisponíveis para ID ${eonetResp.eonetIdApi}` })}
+                                                <small style={{display: 'block', textAlign:'right', color: 'var(--muted-text-color)', paddingRight: '15px', paddingBottom: '5px', marginTop:'5px'}}>
+                                                    ID Local: {eonetResp.idEonet}, Data Registro: {formatDate(eonetResp.data?.toString())}
+                                                </small>
+                                            </div>
+                                            {coords && eventoDetalhes ? (
+                                                <div className="event-mini-map-container" style={{
+                                                    flex: '1 1 250px', minHeight: '200px',
+                                                    borderRadius: 'var(--card-border-radius, 8px)',
+                                                    overflow: 'hidden', border: '1px solid #ccc'
+                                                }}>
+                                                    <DynamicEonetEventMap
+                                                        key={eventKey + "-map"}
+                                                        initialCenter={coords}
+                                                        initialZoom={7}
+                                                        markersData={miniMapMarker}
+                                                        mapContainerStyle={{ height: '100%', width: '100%' }}
+                                                    />
+                                                </div>
+                                            ) : (
+                                                <div style={{ flex: '1 1 250px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                    minHeight: '200px', backgroundColor: '#e9ecef', borderRadius: 'var(--card-border-radius, 8px)',
+                                                    padding: '10px', textAlign: 'center', color: '#6c757d', border: '1px solid #ced4da'
+                                                }}>
+                                                    <p>Mapa não disponível (sem coordenadas válidas no JSON local).</p>
+                                                </div>
+                                            )}
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        )}
+                        {eventosLocaisPage && eventosLocaisPage.totalPages > 1 && (
+                            <div className="pagination-controls">
+                                <button onClick={() => setCurrentLocalPage(p => Math.max(0, p - 1))} disabled={eventosLocaisPage.first || loadingListagemLocal} className="button button-secondary"> <span className="material-icons-outlined">navigate_before</span> Anterior </button>
+                                <span>Página {eventosLocaisPage.number + 1} de {eventosLocaisPage.totalPages}</span>
+                                <button onClick={() => setCurrentLocalPage(p => Math.min(eventosLocaisPage.totalPages - 1, p + 1))} disabled={eventosLocaisPage.last || loadingListagemLocal} className="button button-secondary"> Próxima <span className="material-icons-outlined">navigate_next</span> </button>
+                            </div>
+                        )}
                     </section>
                 )}
 
@@ -480,20 +609,52 @@ export default function DesastresPage() {
                                 <p className="message error" style={{marginTop: '20px'}}>{erroProximidade}</p>
                             )}
                         </form>
+
                         {loadingProximidade && !eventosProximos.length && !(proximidadeParams.clienteId && !nomeUsuarioParaCoords && !erroProximidade) && (
                             <p className="message info" style={{textAlign:'center', margin:'15px 0'}}>Buscando eventos próximos na API da NASA...</p>
                         )}
+
                         {eventosProximos.length > 0 && !loadingProximidade && (
                             <div style={{marginTop: '20px'}}>
-                                <h3 style={{borderBottom: '1px solid var(--border-color)', paddingBottom:'5px', color: 'var(--text-color)', fontSize: '1.1rem', fontWeight: '600'}}>
-                                    Resultados da Busca por Proximidade ({eventosProximos.length} eventos):
+                                <h3 style={{borderBottom: '1px solid var(--border-color, #ccc)', paddingBottom:'5px', color: 'var(--text-color, black)', fontSize: '1.1rem', fontWeight: '600'}}>
+                                    Resultados da Busca por Proximidade ({eventosProximos.length} evento(s)):
                                 </h3>
-                                <ul style={{ listStyle: 'none', padding: 0, maxHeight: '400px', overflowY: 'auto', marginTop: '1rem' }}>
-                                    {eventosProximos.map((evento, index) => (
-                                        <li key={`${evento.id}-${index}`} className="client-list-item" style={{backgroundColor: 'var(--light-gray-bg)', marginBottom:'0.75rem'}}>
-                                            {renderEventoItem(evento, `prox-${index}`)}
-                                        </li>
-                                    ))}
+                                <ul style={{ listStyle: 'none', padding: 0, maxHeight: '500px', overflowY: 'auto', marginTop: '1rem' }}>
+                                    {eventosProximos.map((evento, index) => {
+                                        const coords = getCoordinatesFromEvent(evento.geometry);
+                                        const eventKey = `${evento.id || 'evt'}-${index}`;
+                                        const miniMapMarker: EventMapMarkerData[] = coords ? [{
+                                            id: eventKey, position: coords,
+                                            popupText: `<strong>${evento.title || 'Evento EONET'}</strong>`
+                                        }] : [];
+                                        return (
+                                            <li key={eventKey} className="desastre-page-event-list-item event-card-item-layout">
+                                                <div style={{flex: '2 1 300px', minWidth: '280px'}}>
+                                                    {renderEventoItem(evento)}
+                                                </div>
+                                                {coords ? (
+                                                    <div className="event-mini-map-container" style={{
+                                                        flex: '1 1 250px', minHeight: '200px',
+                                                        borderRadius: 'var(--card-border-radius, 8px)',
+                                                        overflow: 'hidden', border: '1px solid #ccc'
+                                                    }}>
+                                                        <DynamicEonetEventMap
+                                                            key={eventKey + "-map"} initialCenter={coords}
+                                                            initialZoom={7} markersData={miniMapMarker}
+                                                            mapContainerStyle={{ height: '100%', width: '100%' }}
+                                                        />
+                                                    </div>
+                                                ) : (
+                                                    <div style={{ flex: '1 1 250px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                        minHeight: '200px', backgroundColor: '#e9ecef', borderRadius: 'var(--card-border-radius, 8px)',
+                                                        padding: '10px', textAlign: 'center', color: '#6c757d', border: '1px solid #ced4da'
+                                                    }}>
+                                                        <p>Mapa não disponível (sem coordenadas válidas para este evento).</p>
+                                                    </div>
+                                                )}
+                                            </li>
+                                        );
+                                    })}
                                 </ul>
                             </div>
                         )}
@@ -527,10 +688,10 @@ export default function DesastresPage() {
                             {!loadingVerifyUsuario && verifiedUsuario && (
                                 <div className="message success" style={{fontSize: '0.9em', padding: '0.5rem 1rem', marginBottom:'1rem', marginTop: '-0.5rem'}}>
                                     Usuário: <strong>{verifiedUsuario.nome} {verifiedUsuario.sobrenome}</strong><br/>
-                                    Email Principal: {verifiedUsuario.contatos?.find(c=>c.email)?.email || "Não informado"}
+                                    Email Principal: {(Array.from(verifiedUsuario.contatos || [])[0]?.email) || "Não informado"}
                                 </div>
                             )}
-                            {!loadingVerifyUsuario && erroAlertarUsuario && alertarUsuarioParams.usuarioId && !verifiedUsuario && (
+                            {!loadingVerifyUsuario && erroAlertarUsuario && alertarUsuarioParams.usuarioId && !verifiedUsuario && erroAlertarUsuario.toLowerCase().includes("usuário") && (
                                 <p className="message error" style={{fontSize: '0.9em', padding: '0.5rem 1rem', marginBottom:'1rem', marginTop: '-0.5rem'}}>{erroAlertarUsuario}</p>
                             )}
 
@@ -552,10 +713,13 @@ export default function DesastresPage() {
                                     Data: {formatDate(verifiedEvento.geometry?.[0]?.date)}
                                 </div>
                             )}
-                            {!loadingVerifyEvento && erroAlertarUsuario && alertarUsuarioParams.eventoEonetId && !verifiedEvento && ( // Mostra erro SÓ se for da verificação de evento
+                            {!loadingVerifyEvento && erroAlertarUsuario && alertarUsuarioParams.eventoEonetId && !verifiedEvento && erroAlertarUsuario.toLowerCase().includes("evento") && (
                                 <p className="message error" style={{fontSize: '0.9em', padding: '0.5rem 1rem', marginBottom:'1rem', marginTop: '-0.5rem'}}>{erroAlertarUsuario}</p>
                             )}
 
+                            {!loadingAlertarUsuario && erroAlertarUsuario && !(erroAlertarUsuario.toLowerCase().includes("usuário") || erroAlertarUsuario.toLowerCase().includes("evento")) && (
+                                <p className="message error" style={{marginTop: '1rem'}}>{erroAlertarUsuario}</p>
+                            )}
                             {mensagemAlertarUsuario && <p className="message success" style={{marginTop: '1rem'}}>{mensagemAlertarUsuario}</p>}
 
                             <button type="submit" className="button button-primary" disabled={loadingAlertarUsuario || !verifiedUsuario || !verifiedEvento} style={{marginTop: '20px', width: '100%'}} >
@@ -566,6 +730,36 @@ export default function DesastresPage() {
                     </section>
                 )}
             </div>
+
+            <style jsx>{`
+                .desastre-page-event-list-item {
+                    background-color: var(--white-bg, #fff);
+                    padding: 1rem;
+                    margin-bottom: 1rem;
+                    border-radius: var(--card-border-radius, 8px);
+                    box-shadow: var(--card-shadow, 0 2px 4px rgba(0,0,0,0.05));
+                    border: 1px solid var(--border-color, #ddd);
+                    transition: transform 0.25s ease-out, box-shadow 0.25s ease-out;
+                }
+                .desastre-page-event-list-item:hover {
+                    transform: translateY(-5px);
+                    box-shadow: var(--card-shadow-hover, 0 8px 20px rgba(0, 0, 0, 0.12));
+                    position: relative;
+                    z-index: 10;
+                }
+                .event-card-item-layout {
+                    display: flex;
+                    gap: 15px;
+                }
+                @media (max-width: 767px) {
+                    .event-card-item-layout {
+                        flex-direction: column;
+                    }
+                }
+                .desastre-page-event-list-item .client-info-section a {
+                    pointer-events: auto !important;
+                }
+            `}</style>
         </div>
     );
 }

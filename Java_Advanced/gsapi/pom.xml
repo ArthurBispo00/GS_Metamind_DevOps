@@ -86,11 +86,11 @@
 			<artifactId>spring-boot-starter-mail</artifactId>
 		</dependency>
 
-        <dependency>
-            <groupId>org.locationtech.jts</groupId>
-            <artifactId>jts-core</artifactId>
-            <version>${jts.version}</version>
-        </dependency>
+		<dependency>
+			<groupId>org.locationtech.jts</groupId>
+			<artifactId>jts-core</artifactId>
+			<version>${jts.version}</version>
+		</dependency>
 
 
 		<dependency>
@@ -122,8 +122,7 @@
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 				<configuration>
-					<mainClass>br.com.fiap.gs.GsapiApplication</mainClass>
-				</configuration>
+					<mainClass>br.com.fiap.gs.gsapi.GsapiApplication</mainClass> </configuration>
 			</plugin>
 		</plugins>
 	</build>

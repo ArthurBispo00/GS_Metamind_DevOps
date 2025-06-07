@@ -7,140 +7,171 @@ import type {
     ViaCepResponseDTO, ApiErrorResponse, Page,
     EonetResponseDTO, NasaEonetEventDTO,
     CategoryCountDTO,
-    UserAlertRequestDTO,
-    AlertableEventDTO
+    UserAlertRequestDTO
 } from './types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api';
+console.log(`[apiService Módulo Load] API_BASE_URL inicializada como: "${API_BASE_URL}"`);
 
-async function handleResponse<T>(response: Response): Promise<T> {
+async function handleResponse<T>(response: Response, requestUrl: string): Promise<T> {
+    const timestamp = new Date().toISOString();
+    console.log(`[apiService][${timestamp}] handleResponse - URL: ${requestUrl}, Status HTTP: ${response.status}, OK: ${response.ok}`);
+
     if (!response.ok) {
-        let errorData: Partial<ApiErrorResponse> = {
-            message: `Erro ${response.status}: ${response.statusText || "Falha na requisição à API."}`,
-            status: response.status,
-            timestamp: new Date().toISOString(),
-        };
-        let detailedMessages: string[] = [];
+        const errorPrefix = `[apiService][${timestamp}] ERRO na API para ${requestUrl}`;
+        let errorPayload: Partial<ApiErrorResponse> | null = null;
+        let errorTextMessage: string | null = null;
+        const responseCloneForErrorParsing = response.clone();
+
         try {
             const contentType = response.headers.get("content-type");
+            console.log(`${errorPrefix} - Content-Type da resposta de erro: ${contentType}`);
             if (contentType && contentType.includes("application/json")) {
-                const parsedError = await response.json();
-                errorData = { ...errorData, ...parsedError };
-                if (Array.isArray(parsedError.messages) && parsedError.messages.length > 0) {
-                    detailedMessages = parsedError.messages;
-                } else if (parsedError.message && typeof parsedError.message === 'string') {
-                    detailedMessages.push(parsedError.message);
-                } else if (parsedError.error && typeof parsedError.error === 'string' && parsedError.status) {
-                    detailedMessages.push(`${parsedError.error} (Status: ${parsedError.status})`);
-                }
+                errorPayload = await response.json() as Partial<ApiErrorResponse>;
+                console.log(`${errorPrefix} - Corpo do erro (JSON parseado):`, errorPayload);
             } else {
-                const textError = await response.text();
-                if (textError) detailedMessages.push(textError);
+                errorTextMessage = await response.text();
+                console.log(`${errorPrefix} - Corpo do erro (Texto puro):`, errorTextMessage);
             }
-        } catch (e) {
-            console.warn("Não foi possível parsear o corpo do erro.", e);
+        } catch (e: unknown) {
+            const parseErrorMessage = e instanceof Error ? e.message : String(e);
+            console.warn(`${errorPrefix} - Falha ao parsear o corpo do erro (JSON ou Texto). Tentando ler o corpo do clone como texto. Erro original do parse:`, parseErrorMessage);
             try {
-                // Tentar ler como texto em caso de falha no parse JSON se response não foi consumida
-                // Se response.json() falhou, o corpo pode ainda estar disponível para response.text()
-                // Mas se response.text() já foi chamada, response.clone().text() seria necessário.
-                // Para simplificar, assumimos que a primeira tentativa de leitura é a que vale.
-            } catch (e2) {
-                console.warn("Não foi possível ler o corpo do erro como texto.", e2);
+                errorTextMessage = await responseCloneForErrorParsing.text();
+                console.log(`${errorPrefix} - Corpo do erro (Texto do clone após falha no parse):`, errorTextMessage);
+            } catch (e2: unknown) {
+                const parseCloneErrorMessage = e2 instanceof Error ? e2.message : String(e2);
+                console.warn(`${errorPrefix} - Falha crítica ao ler o corpo do erro como texto do clone.`, parseCloneErrorMessage);
             }
         }
-        let finalErrorMessage = errorData.message || "Erro desconhecido na API.";
-        if(detailedMessages.length > 0) {
-            finalErrorMessage = detailedMessages.join('; ');
+
+        let finalErrorMessage = `Erro ${response.status}: ${response.statusText || "Falha na requisição"}`;
+        if (errorPayload && typeof errorPayload.message === 'string' && errorPayload.message.trim() !== '') {
+            finalErrorMessage = errorPayload.message;
+        } else if (errorPayload && Array.isArray(errorPayload.messages) && errorPayload.messages.length > 0) {
+            finalErrorMessage = errorPayload.messages.join('; ');
+        } else if (errorPayload && typeof errorPayload.error === 'string') {
+            finalErrorMessage = `${errorPayload.error} (Status: ${errorPayload.status || response.status})`;
+        } else if (errorTextMessage && errorTextMessage.trim() !== '') {
+            finalErrorMessage = errorTextMessage.substring(0, 300);
         }
-        console.error("API Error Details:", finalErrorMessage, "Status:", response.status, "Full Parsed Error Object:", errorData);
+
+        console.error(`[apiService][${timestamp}] DETALHES DO ERRO FINAL: Mensagem='${finalErrorMessage}', Status=${response.status}, URL=${requestUrl}. Objeto de erro (se JSON):`, errorPayload);
         throw new Error(finalErrorMessage);
     }
+
     if (response.status === 204) {
+        console.log(`[apiService][${timestamp}] Resposta 204 (No Content) para ${requestUrl}. Retornando null.`);
         return null as T;
     }
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("application/json")) {
-        return await response.json() as T;
-    } else {
-        // Se for OK mas não JSON (ex: string pura do ResponseEntity<String>), tenta ler como texto.
-        // Mas a tipagem genérica T pode não ser string.
-        // A função triggerUserSpecificAlert que retorna Promise<string> lida com isso especificamente.
-        // Aqui, mantemos o comportamento de retornar null para outros casos não-JSON.
-        console.warn("Resposta OK, mas não é JSON e não é 204 (No Content):", response.status, response.statusText);
-        return null as T;
+
+    try {
+        const contentType = response.headers.get("content-type");
+        console.log(`[apiService][${timestamp}] Resposta OK para ${requestUrl}. Content-Type: ${contentType}`);
+        if (contentType && contentType.includes("application/json")) {
+            const jsonData = await response.json();
+            const previewData = JSON.stringify(jsonData).substring(0, 300) + (JSON.stringify(jsonData).length > 300 ? "..." : "");
+            console.log(`[apiService][${timestamp}] Resposta JSON OK para ${requestUrl}. Preview dos dados:`, previewData);
+            return jsonData as T;
+        } else {
+            const textData = await response.text();
+            console.log(`[apiService][${timestamp}] Resposta Texto OK para ${requestUrl}:`, textData.substring(0,300) + "...");
+            return textData as unknown as T;
+        }
+    } catch (e: unknown) {
+        const errorTimestamp = new Date().toISOString();
+        const parseErrorMessage = e instanceof Error ? (e as Error).message : String(e);
+        console.error(`[apiService][${errorTimestamp}] Erro CRÍTICO ao parsear resposta OK para ${requestUrl}. Isso não deveria acontecer se a API envia JSON válido. Erro:`, parseErrorMessage);
+        let responseTextForDebug = "[Não foi possível ler o corpo da resposta como texto]";
+        try {
+            const responseClone = response.clone();
+            responseTextForDebug = await responseClone.text();
+        } catch {
+            // Silencia o erro de leitura do corpo para depuração
+        }
+        console.error(`[apiService][${errorTimestamp}] Corpo da resposta (texto) que falhou no parse JSON para ${requestUrl}:`, responseTextForDebug.substring(0, 500) + "...");
+        throw new Error(`Falha ao processar a resposta JSON da API para ${requestUrl}. Detalhes: ${parseErrorMessage}`);
     }
 }
+
+// ... (outras funções do Cliente, Contato e Endereco API permanecem as mesmas) ...
 
 // --- Cliente API ---
 export async function listarClientes(page: number = 0, size: number = 10): Promise<Page<ClienteResponseDTO>> {
-    const response = await fetch(`${API_BASE_URL}/clientes?page=${page}&size=${size}&sort=nome,asc`);
-    return handleResponse<Page<ClienteResponseDTO>>(response);
+    const sortBy = 'nome';
+    const direction = 'asc';
+    const sortParam = `${sortBy},${direction}`;
+    const requestUrl = `${API_BASE_URL}/clientes?page=${page}&size=${size}&sort=${sortParam}`;
+    return fetch(requestUrl).then(response => handleResponse<Page<ClienteResponseDTO>>(response, requestUrl));
 }
+
 export async function buscarClientePorId(id: number): Promise<ClienteResponseDTO> {
-    const response = await fetch(`${API_BASE_URL}/clientes/${id}`);
-    return handleResponse<ClienteResponseDTO>(response);
+    const requestUrl = `${API_BASE_URL}/clientes/${id}`;
+    return fetch(requestUrl).then(response => handleResponse<ClienteResponseDTO>(response, requestUrl));
 }
+
 export async function buscarClientePorDocumento(documento: string): Promise<ClienteResponseDTO> {
-    const response = await fetch(`${API_BASE_URL}/clientes/documento/${documento.replace(/\D/g, '')}`);
-    return handleResponse<ClienteResponseDTO>(response);
+    const cleanedDocumento = (documento || '').replace(/\D/g, '');
+    const requestUrl = `${API_BASE_URL}/clientes/documento/${cleanedDocumento}`;
+    return fetch(requestUrl).then(response => handleResponse<ClienteResponseDTO>(response, requestUrl));
 }
+
 export async function criarCliente(data: ClienteRequestDTO): Promise<ClienteResponseDTO> {
     const payload = {...data, documento: (data.documento || '').replace(/\D/g, '') };
-    const response = await fetch(`${API_BASE_URL}/clientes`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
-    return handleResponse<ClienteResponseDTO>(response);
+    const requestUrl = `${API_BASE_URL}/clientes`;
+    const response = await fetch(requestUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    return handleResponse<ClienteResponseDTO>(response, requestUrl);
 }
+
 export async function atualizarCliente(id: number, data: ClienteRequestDTO): Promise<ClienteResponseDTO> {
     const payload = {...data, documento: (data.documento || '').replace(/\D/g, '') };
-    const response = await fetch(`${API_BASE_URL}/clientes/${id}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
-    return handleResponse<ClienteResponseDTO>(response);
+    const requestUrl = `${API_BASE_URL}/clientes/${id}`;
+    const response = await fetch(requestUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    return handleResponse<ClienteResponseDTO>(response, requestUrl);
 }
+
 export async function deletarCliente(id: number): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/clientes/${id}`, { method: 'DELETE' });
-    await handleResponse<void>(response);
+    const requestUrl = `${API_BASE_URL}/clientes/${id}`;
+    const response = await fetch(requestUrl, { method: 'DELETE' });
+    await handleResponse<void>(response, requestUrl);
 }
 
 // --- Contato API ---
 export async function criarContatoSozinho(data: ContatoRequestDTO): Promise<ContatoResponseDTO> {
-    const response = await fetch(`${API_BASE_URL}/contatos`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-    });
-    return handleResponse<ContatoResponseDTO>(response);
+    const requestUrl = `${API_BASE_URL}/contatos`;
+    const response = await fetch(requestUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    return handleResponse<ContatoResponseDTO>(response, requestUrl);
 }
 
 // --- Endereco API ---
 export async function consultarCepPelaApi(cep: string): Promise<ViaCepResponseDTO> {
-    const response = await fetch(`${API_BASE_URL}/enderecos/consultar-cep/${cep.replace(/\D/g, '')}`);
-    return handleResponse<ViaCepResponseDTO>(response);
+    const cleanedCep = (cep || '').replace(/\D/g, '');
+    const requestUrl = `${API_BASE_URL}/enderecos/consultar-cep/${cleanedCep}`;
+    return fetch(requestUrl).then(response => handleResponse<ViaCepResponseDTO>(response, requestUrl));
 }
+
 export async function calcularCoordenadasPelaApi(data: EnderecoGeoRequestDTO): Promise<GeoCoordinatesDTO> {
-    const response = await fetch(`${API_BASE_URL}/enderecos/calcular-coordenadas`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-    });
-    return handleResponse<GeoCoordinatesDTO>(response);
+    const requestUrl = `${API_BASE_URL}/enderecos/calcular-coordenadas`;
+    const response = await fetch(requestUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    return handleResponse<GeoCoordinatesDTO>(response, requestUrl);
 }
+
 export async function criarEnderecoSozinho(data: EnderecoRequestDTO): Promise<EnderecoResponseDTO> {
-    const response = await fetch(`${API_BASE_URL}/enderecos`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
-    });
-    return handleResponse<EnderecoResponseDTO>(response);
+    const requestUrl = `${API_BASE_URL}/enderecos`;
+    const response = await fetch(requestUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+    return handleResponse<EnderecoResponseDTO>(response, requestUrl);
 }
 
 // --- Eonet API ---
 export async function listarEventosEonet(page: number = 0, size: number = 10): Promise<Page<EonetResponseDTO>> {
-    const response = await fetch(`${API_BASE_URL}/eonet?page=${page}&size=${size}&sort=data,desc`);
-    return handleResponse<Page<EonetResponseDTO>>(response);
+    const requestUrl = `${API_BASE_URL}/eonet?page=${page}&size=${size}&sort=data,desc`;
+    return fetch(requestUrl).then(response => handleResponse<Page<EonetResponseDTO>>(response, requestUrl));
 }
 
-// ▼▼▼ GARANTA QUE ESTA FUNÇÃO ESTEJA DEFINIDA E EXPORTADA ▼▼▼
 export async function buscarEventoLocalPorEonetApiId(eonetApiId: string): Promise<EonetResponseDTO> {
-    const response = await fetch(`${API_BASE_URL}/eonet/api-id/${eonetApiId}`);
-    return handleResponse<EonetResponseDTO>(response);
+    const requestUrl = `${API_BASE_URL}/eonet/api-id/${eonetApiId}`;
+    return fetch(requestUrl).then(response => handleResponse<EonetResponseDTO>(response, requestUrl));
 }
-// ▲▲▲ FIM DA FUNÇÃO NECESSÁRIA ▲▲▲
 
 export async function sincronizarNasaEonet(limit?: number, days?: number, status?: string, source?: string): Promise<EonetResponseDTO[]> {
     const queryParamsCollector: Record<string, string> = {};
@@ -150,15 +181,17 @@ export async function sincronizarNasaEonet(limit?: number, days?: number, status
     if (source) queryParamsCollector.source = source;
     const params = new URLSearchParams(queryParamsCollector);
     const queryString = params.toString();
-    const response = await fetch(`${API_BASE_URL}/eonet/nasa/sincronizar${queryString ? '?' + queryString : ''}`, {
-        method: 'POST',
-    });
-    return handleResponse<EonetResponseDTO[]>(response);
+    const requestUrl = `${API_BASE_URL}/eonet/nasa/sincronizar${queryString ? '?' + queryString : ''}`;
+    const response = await fetch(requestUrl, { method: 'POST' });
+    return handleResponse<EonetResponseDTO[]>(response, requestUrl);
 }
 
+// ############# INÍCIO DA CORREÇÃO #############
 export async function buscarEventosNasaProximos(
     latitude?: number, longitude?: number, raioKm?: number, limit?: number,
-    days?: number, status?: string, source?: string, startDate?: string, endDate?: string
+    days?: number, status?: string, source?: string, startDate?: string, endDate?: string,
+    // 1. Adicionado o parâmetro categoryId à função
+    categoryId?: string 
 ): Promise<NasaEonetEventDTO[]> {
     const queryParamsCollector: Record<string, string> = {};
     if (latitude !== undefined) queryParamsCollector.latitude = String(latitude);
@@ -168,61 +201,54 @@ export async function buscarEventosNasaProximos(
     if (startDate) queryParamsCollector.start = startDate;
     if (endDate) queryParamsCollector.end = endDate;
     if (!startDate && !endDate && days !== undefined) { queryParamsCollector.days = String(days); }
-    if (status !== undefined && status !== null) { queryParamsCollector.status = status; }
-    if (source !== undefined && source !== null && source.trim() !== '') { queryParamsCollector.source = source; }
+    if (status) queryParamsCollector.status = status;
+    if (source) queryParamsCollector.source = source;
+
+    // 2. Adicionado o categoryId aos parâmetros da URL se ele for fornecido
+    if (categoryId) {
+        queryParamsCollector.category = categoryId;
+    }
+
     const params = new URLSearchParams(queryParamsCollector);
     const queryString = params.toString();
-    console.log(`Frontend: Chamando /api/eonet/nasa/proximos com query: ${queryString}`);
-    const response = await fetch(`${API_BASE_URL}/eonet/nasa/proximos${queryString ? '?' + queryString : ''}`);
-    return handleResponse<NasaEonetEventDTO[]>(response);
+    const requestUrl = `${API_BASE_URL}/eonet/nasa/proximos${queryString ? '?' + queryString : ''}`;
+    console.log(`[apiService] buscarEventosNasaProximos - Preparando para chamar: ${requestUrl}`);
+
+    try {
+        const response = await fetch(requestUrl);
+        return handleResponse<NasaEonetEventDTO[]>(response, requestUrl);
+    } catch (error) {
+        console.error(`[apiService] buscarEventosNasaProximos - Erro CAPTURADO no fetch para ${requestUrl}:`, error);
+        throw error;
+    }
 }
+// ############# FIM DA CORREÇÃO #############
+
 
 // --- Stats API ---
 export async function getEonetCategoryStats(days: number): Promise<CategoryCountDTO[]> {
-    if (days <= 0) {
-        console.warn("getEonetCategoryStats: 'days' deve ser um número positivo.");
-        return [];
-    }
-    const response = await fetch(`${API_BASE_URL}/stats/eonet/count-by-category?days=${days}`);
-    return handleResponse<CategoryCountDTO[]>(response);
+    if (days <= 0) return [];
+    const requestUrl = `${API_BASE_URL}/stats/eonet/count-by-category?days=${days}`;
+    return fetch(requestUrl).then(response => handleResponse<CategoryCountDTO[]>(response, requestUrl));
 }
 
 // --- Alert API ---
 export async function triggerUserSpecificAlert(data: UserAlertRequestDTO): Promise<string> {
-    const response = await fetch(`${API_BASE_URL}/alerts/trigger-user-specific-alert`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-    });
-
-    if (!response.ok) {
-        let errorMessage = `Falha ao disparar alerta (Status: ${response.status})`;
-        try {
-            const contentType = response.headers.get("content-type");
-            if (contentType && contentType.includes("application/json")) {
-                const errorJson: Partial<ApiErrorResponse> = await response.json();
-                let detailedMessages: string[] = [];
-                if (Array.isArray(errorJson.messages) && errorJson.messages.length > 0) {
-                    detailedMessages = errorJson.messages;
-                } else if (errorJson.message && typeof errorJson.message === 'string') {
-                    detailedMessages.push(errorJson.message);
-                } else if (errorJson.error && typeof errorJson.error === 'string' && errorJson.status) {
-                    detailedMessages.push(`${errorJson.error} (Status: ${errorJson.status})`);
-                }
-                if (detailedMessages.length > 0) {
-                    errorMessage = detailedMessages.join('; ');
-                } else if (errorJson.message) {
-                    errorMessage = errorJson.message;
-                }
-            } else {
-                const errorText = await response.text();
-                if (errorText) errorMessage = errorText;
-            }
-        } catch (e) {
-            console.error("Erro ao processar resposta de erro da API (triggerUserSpecificAlert):", e);
+    const requestUrl = `${API_BASE_URL}/alerts/trigger-user-specific-alert`;
+    try {
+        const response = await fetch(requestUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        // Simplificado para usar handleResponse para erros, ou processar sucesso.
+        if (!response.ok) {
+            // handleResponse lança um erro formatado, então não precisamos duplicar a lógica aqui
+            return handleResponse(response, requestUrl); 
         }
-        console.error("API Error (triggerUserSpecificAlert):", errorMessage);
-        throw new Error(errorMessage);
+        return await response.text();
+    } catch (error) {
+        console.error(`[apiService] triggerUserSpecificAlert - Erro CAPTURADO no fetch para ${requestUrl}:`, error);
+        throw error;
     }
-    return response.text();
 }

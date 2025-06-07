@@ -92,9 +92,32 @@ docker build -t gs-oracle-db:custom .
 
 Nota: A construção desta imagem, especialmente na primeira vez, pode demorar bastante (10-20 minutos ou mais) devido ao download da imagem base do Oracle Database Express Edition. Tenha paciência e aguarde a conclusão.
 
-## 🚀 Executar a Aplicação com Docker (Backend e Banco de Dados)
 
-Siga os passos abaixo para executar os containers do backend e do banco de dados.
+#### 3. Construir a Imagem do Front-End:
+
+Navegue no terminal até a pasta que contém o `Dockerfile` do seu Oracle e o script DDL (ex: `GS_FIAP_2025_1SM-1/Java_Advanced/gs-frontend`).
+
+Navegue para a pasta `gs-frontend/`.
+
+```bash
+cd caminho/para/GS_FIAP_2025_1SM-1/Java_Advanced/gs-frontend
+```
+
+Carregue a imagem Docker localmente:
+
+```bash
+docker load -i minha-app-next.tar
+```
+
+Em seguida, construa a imagem Docker do front-end:
+
+```bash
+docker build -t gs-app-frontend:latest .
+```
+
+## 🚀 Executar a Aplicação com Docker (Backend ,Banco de Dados e Front-End)
+
+Siga os passos abaixo para executar os containers do backend, do banco de dados e do Front-End.
 
 ### 1. Criar uma Rede Docker Customizada
 
@@ -156,5 +179,53 @@ dê o comando:
 
 ```bash
 docker logs -f oracle-db-container
+```
+para verificar os logs e as criação das tabelas.
+
+### 4. Executar o Container do Backend Java
+
+Com o container do Oracle (`oracle-db-container`) em execução e devidamente inicializado, podemos iniciar o container da aplicação Java Spring Boot. Este container se conectará ao Oracle através da rede `gs-fiap-network`.
+
+Execute o comando abaixo. Lembre-se de:
+* Substituir `"SUA_Maps_API_KEY_REAL"` pela sua chave real da API do Google Maps. Se você não for usar essa funcionalidade agora ou não tiver uma chave, pode deixar a string vazia `""` ou remover a linha `-e Maps_APIKEY=...` por enquanto.
+* Certificar-se de que `SPRING_DATASOURCE_USERNAME` (ex: `global`) e `SPRING_DATASOURCE_PASSWORD` (ex: `paulo1`) correspondem ao usuário e senha que você criou no seu script DDL dentro do container Oracle.
+
+```bash
+ docker run -d --name backend-api-container --network gs-fiap-network -p 8080:8080 -e SPRING_DATASOURCE_URL=jdbc:oracle:thin:@oracle-db-container:1521:XE -e SPRING_DATASOURCE_USERNAME=global -e SPRING_DATASOURCE_PASSWORD=paulo1 -e SPRING_JPA_HIBERNATE_DDL_AUTO=validate -e Maps_APIKEY=AIzaSyBc94e1VSiZ3cIoASH2Ko8RryGlNBhltJM gs-app-backend:latest
+```
+**Como verificar o progresso e se está pronto:**
+Para verificar se o container está em execução, use:
+
+```bash
+docker ps
+```
+
+dê o comando:
+
+```bash
+docker logs -f backend-api-container
+```
+para verificar os logs e as criação das tabelas.
+
+### 5. Executar o Container do Front-End
+
+Com o container do Oracle (oracle-db-container) em execução e devidamente inicializado, podemos iniciar o container do front-end (ex: uma aplicação Next.js). Este container se conectará ao banco Oracle através da rede Docker gs-fiap-network.
+
+Execute o comando abaixo. Atenção aos seguintes pontos:
+
+```bash
+docker run -d --name frontend-api-container --network gs-fiap-network -p 3000:3000 gs-app-frontend:latest
+```
+**Como verificar o progresso e se está pronto:**
+Para verificar se o container está em execução, use:
+
+```bash
+docker ps
+```
+
+dê o comando:
+
+```bash
+docker logs -f frontend-api-container
 ```
 para verificar os logs e as criação das tabelas.
